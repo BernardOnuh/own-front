@@ -36,13 +36,18 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
   const [redeemAmount, setRedeemAmount] = useState("");
   const [requiredCollateral, setRequiredCollateral] = useState<string>("0");
   const [liquidityError, setLiquidityError] = useState<string>("");
-  const { isLoading: isUserDataLoading, error: userDataError } = userData;
+  const { isLoading: isUserDataLoading, error: userDataError, userRequest } = userData;
 
   // Check if pool is active
   const isPoolActive = pool.poolStatus === "ACTIVE";
 
   // Calculate available liquidity
   const liquidityData = calculateAvailableLiquidity(pool);
+
+  // Check if user has a pending request in the current cycle
+  const hasPendingRequest = Boolean(userRequest && 
+    (userRequest.requestType === "DEPOSIT" || userRequest.requestType === "REDEEM") &&
+    Number(userRequest.requestCycle) >= Number(pool.currentCycle));
 
   // Use the hook for contract interactions
   const {
@@ -115,14 +120,14 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
   // Check approval status when amounts change
   useEffect(() => {
     const checkApprovals = async () => {
-      if (depositAmount && Number(depositAmount) > 0 && !liquidityError) {
+      if (depositAmount && Number(depositAmount) > 0 && !liquidityError && !hasPendingRequest) {
         const totalAmount = (
           Number(depositAmount) + Number(requiredCollateral)
         ).toString();
         await checkReserveApproval(totalAmount);
       }
 
-      if (redeemAmount && Number(redeemAmount) > 0) {
+      if (redeemAmount && Number(redeemAmount) > 0 && !hasPendingRequest) {
         await checkAssetApproval(redeemAmount);
       }
     };
@@ -133,6 +138,7 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
     redeemAmount,
     requiredCollateral,
     liquidityError,
+    hasPendingRequest,
     checkReserveApproval,
     checkAssetApproval,
   ]);
@@ -145,6 +151,11 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
 
     if (liquidityError) {
       toast.error("Deposit exceeds available liquidity");
+      return;
+    }
+
+    if (hasPendingRequest) {
+      toast.error("You can only have one request per cycle");
       return;
     }
 
@@ -167,6 +178,11 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
       return;
     }
 
+    if (hasPendingRequest) {
+      toast.error("You can only have one request per cycle");
+      return;
+    }
+
     try {
       const totalAmount = (
         Number(depositAmount) + Number(requiredCollateral)
@@ -183,6 +199,11 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
       return;
     }
 
+    if (hasPendingRequest) {
+      toast.error("You can only have one request per cycle");
+      return;
+    }
+
     try {
       await approveAsset(redeemAmount);
     } catch (error) {
@@ -196,6 +217,11 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
       return;
     }
 
+    if (hasPendingRequest) {
+      toast.error("You can only have one request per cycle");
+      return;
+    }
+
     try {
       await redemptionRequest(redeemAmount);
       setRedeemAmount("");
@@ -205,8 +231,8 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
     }
   };
 
-  const isDepositable = isPoolActive && !isLoading && !liquidityError;
-  const isRedeemable = isPoolActive && !isLoading;
+  const isDepositable = isPoolActive && !isLoading && !liquidityError && !hasPendingRequest;
+  const isRedeemable = isPoolActive && !isLoading && !hasPendingRequest;
 
   // Check if there's enough balance for the current action
   const hasEnoughDepositBalance =
@@ -227,9 +253,10 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
               setDepositAmount(e.target.value)
             }
+            disabled={hasPendingRequest}
             className={`px-2 h-12 bg-slate-600/50 border-slate-700 text-gray-400 placeholder:text-gray-400 ${
               liquidityError ? "border-red-500" : ""
-            }`}
+            } ${hasPendingRequest ? "opacity-50 cursor-not-allowed" : ""}`}
           />
           <div className="flex items-center justify-between px-2">
             <span className="text-sm text-slate-400">
@@ -240,10 +267,10 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
                 `${reserveBalance} ${pool.reserveToken}`
               )}
             </span>
-            {depositAmount && !hasEnoughDepositBalance && !liquidityError && (
+            {depositAmount && !hasEnoughDepositBalance && !liquidityError && !hasPendingRequest && (
               <span className="text-sm text-red-400">Insufficient balance</span>
             )}
-            {error && !liquidityError && (
+            {error && !liquidityError && !hasPendingRequest && (
               <span className="text-sm text-red-400">{error.message}</span>
             )}
           </div>
@@ -253,6 +280,14 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
             <div className="flex items-center gap-2 text-red-400 bg-red-500/10 p-2 rounded text-sm">
               <AlertTriangle className="w-4 h-4 flex-shrink-0" />
               <span>{liquidityError}</span>
+            </div>
+          )}
+
+          {/* Pending Request Warning */}
+          {hasPendingRequest && (
+            <div className="flex items-center gap-2 text-yellow-400 bg-yellow-500/10 p-2 rounded text-sm">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+              <span>You can only have one request per cycle</span>
             </div>
           )}
         </div>
@@ -284,7 +319,8 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
               !isDepositable ||
               !depositAmount ||
               !hasEnoughDepositBalance ||
-              !!liquidityError
+              !!liquidityError ||
+              hasPendingRequest
             }
             className="w-full h-12 bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
           >
@@ -300,7 +336,8 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
               !isDepositable ||
               !depositAmount ||
               !hasEnoughDepositBalance ||
-              !!liquidityError
+              !!liquidityError ||
+              hasPendingRequest
             }
           >
             {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -311,7 +348,9 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
       </div>
       <p className="text-sm text-slate-400 flex items-center">
         <Info className="w-4 h-4 mr-1" />
-        {isPoolActive
+        {hasPendingRequest
+          ? "You can only have one request per cycle"
+          : isPoolActive
           ? "Deposits include collateral and are processed at the end of each cycle"
           : `Pool is currently ${pool.poolStatus.toLowerCase()}. Actions are disabled.`}
       </p>
@@ -369,8 +408,10 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setRedeemAmount(e.target.value)
                 }
-                disabled={!isPoolActive}
-                className="px-2 h-12 bg-slate-600/50 border-slate-700 text-gray-400 placeholder:text-gray-400"
+                disabled={!isPoolActive || hasPendingRequest}
+                className={`px-2 h-12 bg-slate-600/50 border-slate-700 text-gray-400 placeholder:text-gray-400 ${
+                  hasPendingRequest ? "opacity-50 cursor-not-allowed" : ""
+                }`}
               />
               <div className="flex items-center justify-between px-2">
                 <span className="text-sm text-slate-400">
@@ -381,12 +422,20 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
                     `${assetBalance} ${pool.assetTokenSymbol}`
                   )}
                 </span>
-                {redeemAmount && !checkSufficientAssetBalance(redeemAmount) && (
+                {redeemAmount && !checkSufficientAssetBalance(redeemAmount) && !hasPendingRequest && (
                   <span className="text-sm text-red-400">
                     Insufficient balance
                   </span>
                 )}
               </div>
+
+              {/* Pending Request Warning for Redeem */}
+              {hasPendingRequest && (
+                <div className="flex items-center gap-2 text-yellow-400 bg-yellow-500/10 p-2 rounded text-sm">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>You can only have one request per cycle</span>
+                </div>
+              )}
             </div>
 
             {!assetApproved ? (
@@ -395,9 +444,10 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
                 disabled={
                   !isRedeemable ||
                   !redeemAmount ||
-                  !checkSufficientAssetBalance(redeemAmount)
+                  !checkSufficientAssetBalance(redeemAmount) ||
+                  hasPendingRequest
                 }
-                className="w-full h-12 bg-green-600 hover:bg-green-700 text-white"
+                className="w-full h-12 bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 <Wallet className="w-4 h-4 mr-2" />
@@ -406,12 +456,13 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
             ) : (
               <Button
                 variant="secondary"
-                className="w-full h-12 bg-slate-700 hover:bg-slate-600 text-slate-100"
+                className="w-full h-12 bg-slate-700 hover:bg-slate-600 text-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={handleRedeem}
                 disabled={
                   !isRedeemable ||
                   !redeemAmount ||
-                  !checkSufficientAssetBalance(redeemAmount)
+                  !checkSufficientAssetBalance(redeemAmount) ||
+                  hasPendingRequest
                 }
               >
                 {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
@@ -422,7 +473,9 @@ export const UserActionsCard: React.FC<UserActionsCardProps> = ({
           </div>
           <p className="text-sm text-slate-400 flex items-center">
             <Info className="w-4 h-4 mr-1" />
-            {isPoolActive
+            {hasPendingRequest
+              ? "You can only have one request per cycle"
+              : isPoolActive
               ? "Redemptions are processed at the end of each cycle"
               : `Pool is currently ${pool.poolStatus.toLowerCase()}. Actions are disabled.`}
           </p>

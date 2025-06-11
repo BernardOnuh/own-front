@@ -1,3 +1,4 @@
+// Enhanced LPActionsCard with request validation
 import React, { useState, useEffect } from "react";
 import {
   Card,
@@ -13,12 +14,13 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/TabsComponents";
-import { Loader2, AlertCircle, Info, Wallet } from "lucide-react";
+import { Loader2, AlertCircle, Info, Wallet, AlertTriangle } from "lucide-react";
 import { Pool } from "@/types/pool";
 import { useAccount } from "wagmi";
 import { useLiquidityManagement } from "@/hooks/lp";
 import { LPData } from "@/types/lp";
 import { formatUnits } from "viem";
+import toast from "react-hot-toast";
 
 interface LPActionsCardProps {
   pool: Pool;
@@ -38,6 +40,14 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
 
   // Check if pool is active for liquidity operations
   const isPoolActive = pool.poolStatus === "ACTIVE";
+
+  // Check if user has a pending LP request in the current cycle
+  const hasPendingLPRequest = Boolean(lpData.lpRequest && 
+    (lpData.lpRequest.requestType === "ADD_LIQUIDITY" || 
+     lpData.lpRequest.requestType === "REDUCE_LIQUIDITY" ||
+     lpData.lpRequest.requestType === "ADD_COLLATERAL" ||
+     lpData.lpRequest.requestType === "REDUCE_COLLATERAL") &&
+    Number(lpData.lpRequest.requestCycle) >= Number(pool.currentCycle));
 
   const {
     increaseLiquidity,
@@ -70,11 +80,7 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
       return;
     }
 
-    // Get the LP healthy collateral ratio from the pool's strategy
-    // This is typically expressed in basis points (10000 = 100%)
-    const lpHealthyCollateralRatio = pool.lpHealthyCollateralRatio || 3000; // Default to 30% if not provided
-
-    // Calculate required collateral: amount * (ratio / BPS)
+    const lpHealthyCollateralRatio = pool.lpHealthyCollateralRatio || 3000;
     const reqcollateralAmount = (
       (Number(liquidityAmount) * lpHealthyCollateralRatio) /
       10000
@@ -90,14 +96,16 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
         actionType === "add" &&
         currentTab === "liquidity" &&
         liquidityAmount &&
-        Number(liquidityAmount) > 0
+        Number(liquidityAmount) > 0 &&
+        !hasPendingLPRequest
       ) {
         await checkApproval(requiredCollateral);
       } else if (
         actionType === "add" &&
         currentTab === "collateral" &&
         collateralAmount &&
-        Number(collateralAmount) > 0
+        Number(collateralAmount) > 0 &&
+        !hasPendingLPRequest
       ) {
         await checkApproval(collateralAmount);
       }
@@ -111,9 +119,15 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
     checkApproval,
     currentTab,
     requiredCollateral,
+    hasPendingLPRequest,
   ]);
 
   const handleApproval = async () => {
+    if (hasPendingLPRequest) {
+      toast.error("You can only have one request per cycle");
+      return;
+    }
+
     if (actionType === "add" && currentTab === "liquidity" && liquidityAmount) {
       await approve(requiredCollateral);
     } else if (
@@ -126,22 +140,48 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
   };
 
   const handleLiquidityAction = async () => {
-    if (!liquidityAmount) return;
+    if (!liquidityAmount) {
+      toast.error("Please enter an amount");
+      return;
+    }
 
-    if (actionType === "add") {
-      await increaseLiquidity(liquidityAmount);
-    } else {
-      await decreaseLiquidity(liquidityAmount);
+    if (hasPendingLPRequest) {
+      toast.error("You can only have one request per cycle");
+      return;
+    }
+
+    try {
+      if (actionType === "add") {
+        await increaseLiquidity(liquidityAmount);
+      } else {
+        await decreaseLiquidity(liquidityAmount);
+      }
+      setLiquidityAmount("");
+    } catch (error) {
+      console.error("Liquidity action error:", error);
     }
   };
 
   const handleCollateralAction = async () => {
-    if (!collateralAmount) return;
+    if (!collateralAmount) {
+      toast.error("Please enter an amount");
+      return;
+    }
 
-    if (actionType === "add") {
-      await addCollateral(address!, collateralAmount);
-    } else {
-      await reduceCollateral(collateralAmount);
+    if (hasPendingLPRequest) {
+      toast.error("You can only have one request per cycle");
+      return;
+    }
+
+    try {
+      if (actionType === "add") {
+        await addCollateral(address!, collateralAmount);
+      } else {
+        await reduceCollateral(collateralAmount);
+      }
+      setCollateralAmount("");
+    } catch (error) {
+      console.error("Collateral action error:", error);
     }
   };
 
@@ -165,7 +205,16 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
   };
 
   const renderPoolStatusMessage = () => {
-    if (isPoolActive) return null;
+    if (isPoolActive && !hasPendingLPRequest) return null;
+
+    if (hasPendingLPRequest) {
+      return (
+        <div className="flex items-center gap-2 text-yellow-400 bg-yellow-500/10 p-2 rounded text-sm">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          <span>You can only have one request per cycle</span>
+        </div>
+      );
+    }
 
     return (
       <div className="flex items-center gap-2 text-gray-400 p-2 rounded-lg">
@@ -222,20 +271,31 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                 placeholder="Enter amount to provide"
                 value={liquidityAmount}
                 onChange={(e) => setLiquidityAmount(e.target.value)}
-                className="px-2 bg-slate-600/50 border-slate-700 h-12"
+                disabled={hasPendingLPRequest}
+                className={`px-2 bg-slate-600/50 border-slate-700 h-12 ${
+                  hasPendingLPRequest ? "opacity-50 cursor-not-allowed" : ""
+                }`}
               />
               <div className="flex justify-between mt-1">
                 <span className="text-xs text-gray-400">
                   Balance: {isLoadingBalance ? "Loading..." : userBalance}{" "}
                   {pool.reserveToken}
                 </span>
-                {liquidityAmount && !hasEnoughLiquidityBalance && (
+                {liquidityAmount && !hasEnoughLiquidityBalance && !hasPendingLPRequest && (
                   <span className="text-xs text-red-400">
                     Insufficient balance
                   </span>
                 )}
               </div>
             </div>
+
+            {/* Pending Request Warning */}
+            {hasPendingLPRequest && (
+              <div className="flex items-center gap-2 text-yellow-400 bg-yellow-500/10 p-2 rounded text-sm">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>You can only have one request per cycle</span>
+              </div>
+            )}
 
             <div className="p-3 bg-blue-500/10 rounded-lg">
               <div className="flex justify-between items-center">
@@ -267,7 +327,8 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   isLoading ||
                   !liquidityAmount ||
                   !hasEnoughLiquidityBalance ||
-                  !isPoolActive
+                  !isPoolActive ||
+                  hasPendingLPRequest
                 }
                 className="w-full bg-green-600 hover:bg-green-700 h-12 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -281,7 +342,8 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   isLoading ||
                   !liquidityAmount ||
                   !hasEnoughLiquidityBalance ||
-                  !isPoolActive
+                  !isPoolActive ||
+                  hasPendingLPRequest
                 }
                 className="w-full bg-blue-600 hover:bg-blue-700 h-12 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -289,7 +351,6 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                 Register as LP
               </Button>
             )}
-            {/* Pool Status Message for Registration */}
             {renderPoolStatusMessage()}
             {renderError(managementError)}
           </div>
@@ -338,13 +399,13 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   name="liquidity-action"
                   checked={actionType === "add"}
                   onChange={() => setActionType("add")}
-                  disabled={!isPoolActive}
+                  disabled={!isPoolActive || hasPendingLPRequest}
                   className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-600 focus:ring-offset-gray-800 disabled:opacity-50"
                 />
                 <label
                   htmlFor="add-liquidity"
                   className={`ml-2 text-sm font-medium ${
-                    isPoolActive ? "text-gray-300" : "text-gray-500"
+                    isPoolActive && !hasPendingLPRequest ? "text-gray-300" : "text-gray-500"
                   }`}
                 >
                   Add Commitment
@@ -357,12 +418,13 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   name="liquidity-action"
                   checked={actionType === "remove"}
                   onChange={() => setActionType("remove")}
+                  disabled={hasPendingLPRequest}
                   className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-600 focus:ring-offset-gray-800 disabled:opacity-50"
                 />
                 <label
                   htmlFor="remove-liquidity"
                   className={`ml-2 text-sm font-medium ${
-                    isPoolActive ? "text-gray-300" : "text-gray-500"
+                    !hasPendingLPRequest ? "text-gray-300" : "text-gray-500"
                   }`}
                 >
                   Remove
@@ -383,7 +445,10 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   }`}
                   value={liquidityAmount}
                   onChange={(e) => setLiquidityAmount(e.target.value)}
-                  className="px-2 bg-slate-600/50 border-slate-700 h-12"
+                  disabled={hasPendingLPRequest}
+                  className={`px-2 bg-slate-600/50 border-slate-700 h-12 ${
+                    hasPendingLPRequest ? "opacity-50 cursor-not-allowed" : ""
+                  }`}
                 />
                 {actionType === "add" && (
                   <div className="flex justify-between mt-1">
@@ -391,7 +456,7 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                       Balance: {isLoadingBalance ? "Loading..." : userBalance}{" "}
                       {pool.reserveToken}
                     </span>
-                    {liquidityAmount && !hasEnoughLiquidityBalance && (
+                    {liquidityAmount && !hasEnoughLiquidityBalance && !hasPendingLPRequest && (
                       <span className="text-xs text-red-400">
                         Insufficient balance
                       </span>
@@ -399,6 +464,14 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Pending Request Warning */}
+              {hasPendingLPRequest && (
+                <div className="flex items-center gap-2 text-yellow-400 bg-yellow-500/10 p-2 rounded text-sm">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>You can only have one request per cycle</span>
+                </div>
+              )}
 
               {currentTab === "liquidity" && actionType === "add" && (
                 <div className="p-3 bg-blue-500/10 rounded-lg">
@@ -432,7 +505,8 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                     isLoading ||
                     !liquidityAmount ||
                     !hasEnoughLiquidityBalance ||
-                    !isPoolActive
+                    !isPoolActive ||
+                    hasPendingLPRequest
                   }
                   className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -448,7 +522,8 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                     isLoading ||
                     !liquidityAmount ||
                     (actionType === "add" && !hasEnoughLiquidityBalance) ||
-                    !isPoolActive
+                    !isPoolActive ||
+                    hasPendingLPRequest
                   }
                   className={`w-full disabled:opacity-50 disabled:cursor-not-allowed ${
                     actionType === "add"
@@ -468,7 +543,7 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
             {renderPoolStatusMessage()}
           </TabsContent>
 
-          {/* Collateral Tab - Keep existing functionality */}
+          {/* Collateral Tab */}
           <TabsContent value="collateral" className="mt-4 space-y-4">
             {/* Radio buttons for Add/Remove */}
             <div className="flex items-center gap-6 mb-2">
@@ -479,11 +554,14 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   name="collateral-action"
                   checked={actionType === "add"}
                   onChange={() => setActionType("add")}
-                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-600 focus:ring-offset-gray-800"
+                  disabled={hasPendingLPRequest}
+                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-600 focus:ring-offset-gray-800 disabled:opacity-50"
                 />
                 <label
                   htmlFor="add-collateral"
-                  className="ml-2 text-sm font-medium text-gray-300"
+                  className={`ml-2 text-sm font-medium ${
+                    !hasPendingLPRequest ? "text-gray-300" : "text-gray-500"
+                  }`}
                 >
                   Add Collateral
                 </label>
@@ -495,11 +573,14 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   name="collateral-action"
                   checked={actionType === "remove"}
                   onChange={() => setActionType("remove")}
-                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-600 focus:ring-offset-gray-800"
+                  disabled={hasPendingLPRequest}
+                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 focus:ring-blue-600 focus:ring-offset-gray-800 disabled:opacity-50"
                 />
                 <label
                   htmlFor="remove-collateral"
-                  className="ml-2 text-sm font-medium text-gray-300"
+                  className={`ml-2 text-sm font-medium ${
+                    !hasPendingLPRequest ? "text-gray-300" : "text-gray-500"
+                  }`}
                 >
                   Remove Collateral
                 </label>
@@ -519,7 +600,10 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   }`}
                   value={collateralAmount}
                   onChange={(e) => setCollateralAmount(e.target.value)}
-                  className="px-2 bg-slate-600/50 border-slate-700 h-12"
+                  disabled={hasPendingLPRequest}
+                  className={`px-2 bg-slate-600/50 border-slate-700 h-12 ${
+                    hasPendingLPRequest ? "opacity-50 cursor-not-allowed" : ""
+                  }`}
                 />
                 {actionType === "add" && (
                   <div className="flex justify-between mt-1">
@@ -527,7 +611,7 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                       Balance: {isLoadingBalance ? "Loading..." : userBalance}{" "}
                       {pool.reserveToken}
                     </span>
-                    {collateralAmount && !hasEnoughCollateralBalance && (
+                    {collateralAmount && !hasEnoughCollateralBalance && !hasPendingLPRequest && (
                       <span className="text-xs text-red-400">
                         Insufficient balance
                       </span>
@@ -536,7 +620,15 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                 )}
               </div>
 
-              {actionType === "remove" && (
+              {/* Pending Request Warning */}
+              {hasPendingLPRequest && (
+                <div className="flex items-center gap-2 text-yellow-400 bg-yellow-500/10 p-2 rounded text-sm">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>You can only have one request per cycle</span>
+                </div>
+              )}
+
+              {actionType === "remove" && !hasPendingLPRequest && (
                 <div className="group relative">
                   <div className="flex items-center gap-1 text-yellow-500 cursor-help">
                     <Info className="w-4 h-4" />
@@ -559,9 +651,10 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   disabled={
                     isLoading ||
                     !collateralAmount ||
-                    !hasEnoughCollateralBalance
+                    !hasEnoughCollateralBalance ||
+                    hasPendingLPRequest
                   }
-                  className="w-full bg-green-600 hover:bg-green-700"
+                  className="w-full bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isLoading && (
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -574,9 +667,10 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
                   disabled={
                     isLoading ||
                     !collateralAmount ||
-                    (actionType === "add" && !hasEnoughCollateralBalance)
+                    (actionType === "add" && !hasEnoughCollateralBalance) ||
+                    hasPendingLPRequest
                   }
-                  className={`w-full ${
+                  className={`w-full disabled:opacity-50 disabled:cursor-not-allowed ${
                     actionType === "add"
                       ? "bg-green-600 hover:bg-green-700"
                       : "bg-red-600 hover:bg-red-700"
@@ -592,7 +686,7 @@ export const LPActionsCard: React.FC<LPActionsCardProps> = ({
           </TabsContent>
         </Tabs>
 
-        {/* Interest Section - Keep existing functionality */}
+        {/* Interest Section */}
         {lpData.lpPosition?.interestAccrued &&
           currentTab === "collateral" &&
           Number(
